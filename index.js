@@ -4,24 +4,24 @@ const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const CACHE_TTL = 6 * 60 * 60 * 1000;
 
-// TMDB provider IDs pre CZ región
+// HBO Max v CZ má TMDB provider ID 1843 (Max/HBO Max Europe)
+// 384 je HBO Max USA, nefunguje pre CZ
 const PROVIDERS = [
-  { id: 8,   name: 'Netflix',      slug: 'netflix'  },
-  { id: 337, name: 'Disney+',      slug: 'disney'   },
-  { id: 119, name: 'Prime Video',  slug: 'prime'    },
-  { id: 384, name: 'HBO Max',      slug: 'hbo'      },
+  { id: 8,    name: 'Netflix',     slug: 'netflix' },
+  { id: 337,  name: 'Disney+',     slug: 'disney'  },
+  { id: 119,  name: 'Prime Video', slug: 'prime'   },
+  { id: 1899, name: 'HBO Max',     slug: 'hbo'     },
 ];
 
 const MOVIE_GENRES = [28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37];
 const TV_GENRES   = [10759,16,35,80,99,18,10751,10762,9648,10763,10764,878,10765,10766,10767,10768,37];
 
-// cache pre každého providera
 let cache = {};
 PROVIDERS.forEach(p => { cache[p.slug] = { movies: [], tv: [], lastFetch: 0, building: false }; });
 
 const MANIFEST = {
   id: 'community.cz-streaming-catalogs',
-  version: '3.0.0',
+  version: '3.1.0',
   name: 'CZ Streaming Katalógy',
   description: 'Netflix, Disney+, Prime Video a HBO Max – obsah dostupný v Česku',
   logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Netflix_2015_logo.svg/200px-Netflix_2015_logo.svg.png',
@@ -89,7 +89,7 @@ async function buildProviderCache(provider) {
   if (c.building) return;
   if (Date.now() - c.lastFetch < CACHE_TTL) return;
   c.building = true;
-  console.log(`[${provider.name}] Budovanie cache...`);
+  console.log(`[${provider.name}] Budovanie cache (provider ID: ${provider.id})...`);
   try {
     const [movieBatches, tvBatches] = await Promise.all([
       Promise.all([
@@ -132,8 +132,6 @@ app.get('/manifest.json', (req, res) => res.json(MANIFEST));
 app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const { type, id, extra } = req.params;
-
-    // Zisti providera zo slug v id (napr. "netflix-cz-movies" → "netflix")
     const provider = PROVIDERS.find(p => id.startsWith(p.slug));
     if (!provider) return res.json({ metas: [] });
 
@@ -161,18 +159,29 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
   }
 });
 
+// Diagnostika — zoznam všetkých providerov v CZ
+app.get('/providers', async (req, res) => {
+  try {
+    const r = await fetch(`https://api.themoviedb.org/3/watch/providers/movie?api_key=${TMDB_KEY}&watch_region=CZ&language=cs-CZ`);
+    const d = await r.json();
+    const list = (d.results || []).map(p => `${String(p.provider_id).padStart(5)}  ${p.provider_name}`).join('\n');
+    res.send(`<pre>Provideri dostupní v CZ:\n\n${list}</pre>`);
+  } catch(e) {
+    res.send('Chyba: ' + e.message);
+  }
+});
+
 app.get('/', (req, res) => {
   const rows = PROVIDERS.map(p => {
     const c = cache[p.slug];
     const age = c.lastFetch ? Math.round((Date.now() - c.lastFetch) / 60000) + ' min' : 'nenahrané';
     return `${p.name.padEnd(14)} Filmy: ${String(c.movies.length).padStart(4)}  Seriály: ${String(c.tv.length).padStart(4)}  Cache: ${age}`;
   }).join('\n');
-  res.send(`<pre>CZ Streaming Katalógy v3.0\n\n${rows}\n\n<a href="/manifest.json">/manifest.json</a></pre>`);
+  res.send(`<pre>CZ Streaming Katalógy v3.1\n\n${rows}\n\n<a href="/manifest.json">/manifest.json</a>\n<a href="/providers">/providers (zoznam CZ providerov)</a></pre>`);
 });
 
 app.listen(PORT, () => {
   console.log(`Server štartuje na porte ${PORT}`);
-  // Buduj cache pre všetkých providerov postupne (nie naraz — rate limit)
   (async () => {
     for (const p of PROVIDERS) {
       await buildProviderCache(p);

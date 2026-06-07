@@ -4,30 +4,33 @@ const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const CACHE_TTL = 6 * 60 * 60 * 1000;
 
-let cache = { movies: [], tv: [], lastFetch: 0, building: false };
+// TMDB provider IDs pre CZ región
+const PROVIDERS = [
+  { id: 8,   name: 'Netflix',      slug: 'netflix'  },
+  { id: 337, name: 'Disney+',      slug: 'disney'   },
+  { id: 119, name: 'Prime Video',  slug: 'prime'    },
+  { id: 384, name: 'HBO Max',      slug: 'hbo'      },
+];
+
+const MOVIE_GENRES = [28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37];
+const TV_GENRES   = [10759,16,35,80,99,18,10751,10762,9648,10763,10764,878,10765,10766,10767,10768,37];
+
+// cache pre každého providera
+let cache = {};
+PROVIDERS.forEach(p => { cache[p.slug] = { movies: [], tv: [], lastFetch: 0, building: false }; });
 
 const MANIFEST = {
-  id: 'community.netflix-cz-catalog',
-  version: '2.1.0',
-  name: 'Netflix CZ',
-  description: 'Filmy a seriály dostupné na Netflixe v Česku',
+  id: 'community.cz-streaming-catalogs',
+  version: '3.0.0',
+  name: 'CZ Streaming Katalógy',
+  description: 'Netflix, Disney+, Prime Video a HBO Max – obsah dostupný v Česku',
   logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Netflix_2015_logo.svg/200px-Netflix_2015_logo.svg.png',
   resources: ['catalog'],
   types: ['movie', 'series'],
-  catalogs: [
-    {
-      type: 'movie',
-      id: 'netflix-cz-movies',
-      name: 'Netflix CZ – Filmy',
-      extra: [{ name: 'skip', isRequired: false }]
-    },
-    {
-      type: 'series',
-      id: 'netflix-cz-series',
-      name: 'Netflix CZ – Seriály',
-      extra: [{ name: 'skip', isRequired: false }]
-    },
-  ],
+  catalogs: PROVIDERS.flatMap(p => [
+    { type: 'movie',  id: `${p.slug}-cz-movies`,  name: `${p.name} CZ – Filmy`,   extra: [{ name: 'skip', isRequired: false }] },
+    { type: 'series', id: `${p.slug}-cz-series`,  name: `${p.name} CZ – Seriály`, extra: [{ name: 'skip', isRequired: false }] },
+  ]),
   idPrefixes: ['tmdb:'],
 };
 
@@ -36,21 +39,15 @@ app.use((req, res, next) => {
   next();
 });
 
-const MOVIE_GENRES = [28,12,16,35,80,99,18,10751,14,36,27,10402,9648,10749,878,10770,53,10752,37];
-const TV_GENRES   = [10759,16,35,80,99,18,10751,10762,9648,10763,10764,878,10765,10766,10767,10768,37];
-
 async function tmdbGet(path) {
   const sep = path.includes('?') ? '&' : '?';
-  const url = `https://api.themoviedb.org/3${path}${sep}api_key=${TMDB_KEY}`;
-  const r = await fetch(url);
+  const r = await fetch(`https://api.themoviedb.org/3${path}${sep}api_key=${TMDB_KEY}`);
   if (!r.ok) throw new Error(`TMDB ${r.status}: ${path}`);
   return r.json();
 }
 
-async function fetchGenre(mediaType, genreId, maxPages = 5) {
-  const base = mediaType === 'movie'
-    ? `/discover/movie?with_watch_providers=8&watch_region=CZ&language=cs-CZ&include_adult=false${genreId ? '&with_genres='+genreId : ''}&sort_by=popularity.desc`
-    : `/discover/tv?with_watch_providers=8&watch_region=CZ&language=cs-CZ&include_adult=false${genreId ? '&with_genres='+genreId : ''}&sort_by=popularity.desc`;
+async function fetchGenre(mediaType, providerId, genreId, maxPages = 5) {
+  const base = `/discover/${mediaType}?with_watch_providers=${providerId}&watch_region=CZ&language=cs-CZ&include_adult=false${genreId ? '&with_genres='+genreId : ''}&sort_by=popularity.desc`;
   const results = [];
   for (let p = 1; p <= maxPages; p++) {
     try {
@@ -66,7 +63,7 @@ async function fetchGenre(mediaType, genreId, maxPages = 5) {
 function dedup(arr) {
   const seen = new Set();
   return arr.filter(item => {
-    if (!item || !item.id || seen.has(item.id)) return false;
+    if (!item?.id || seen.has(item.id)) return false;
     seen.add(item.id);
     return true;
   });
@@ -85,100 +82,100 @@ function toStremioItem(item, type) {
   };
 }
 
-let cachePromise = null;
+let buildPromises = {};
 
-async function buildCache() {
-  if (!TMDB_KEY) { console.error('CHÝBA TMDB_API_KEY'); return; }
-  if (cache.building) return;
-  if (Date.now() - cache.lastFetch < CACHE_TTL) return;
-  cache.building = true;
-  console.log('=== BUDOVANIE CACHE ===');
+async function buildProviderCache(provider) {
+  const c = cache[provider.slug];
+  if (c.building) return;
+  if (Date.now() - c.lastFetch < CACHE_TTL) return;
+  c.building = true;
+  console.log(`[${provider.name}] Budovanie cache...`);
   try {
-    const movieBatches = await Promise.all([
-      fetchGenre('movie', null, 20),
-      ...MOVIE_GENRES.map(g => fetchGenre('movie', g, 5))
+    const [movieBatches, tvBatches] = await Promise.all([
+      Promise.all([
+        fetchGenre('movie', provider.id, null, 20),
+        ...MOVIE_GENRES.map(g => fetchGenre('movie', provider.id, g, 5))
+      ]),
+      Promise.all([
+        fetchGenre('tv', provider.id, null, 20),
+        ...TV_GENRES.map(g => fetchGenre('tv', provider.id, g, 5))
+      ])
     ]);
-    const allMovies = dedup(movieBatches.flat());
-    allMovies.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-    console.log(`Filmy: ${allMovies.length}`);
 
-    const tvBatches = await Promise.all([
-      fetchGenre('tv', null, 20),
-      ...TV_GENRES.map(g => fetchGenre('tv', g, 5))
-    ]);
-    const allTv = dedup(tvBatches.flat());
-    allTv.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
-    console.log(`Seriály: ${allTv.length}`);
+    const movies = dedup(movieBatches.flat());
+    movies.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
 
-    cache = { movies: allMovies, tv: allTv, lastFetch: Date.now(), building: false };
-    console.log('=== CACHE HOTOVÁ ===');
-  } catch (e) {
-    cache.building = false;
-    console.error('Chyba buildCache:', e.message);
+    const tv = dedup(tvBatches.flat());
+    tv.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+
+    cache[provider.slug] = { movies, tv, lastFetch: Date.now(), building: false };
+    console.log(`[${provider.name}] Hotovo: ${movies.length} filmov, ${tv.length} seriálov`);
+  } catch(e) {
+    c.building = false;
+    console.error(`[${provider.name}] Chyba:`, e.message);
   }
 }
 
-async function ensureCache() {
-  if (cache.movies.length > 0 && Date.now() - cache.lastFetch < CACHE_TTL) return;
-  if (!cachePromise) {
-    cachePromise = buildCache().finally(() => { cachePromise = null; });
+async function ensureProviderCache(provider) {
+  const c = cache[provider.slug];
+  if (c.movies.length > 0 && Date.now() - c.lastFetch < CACHE_TTL) return;
+  if (!buildPromises[provider.slug]) {
+    buildPromises[provider.slug] = buildProviderCache(provider).finally(() => {
+      delete buildPromises[provider.slug];
+    });
   }
-  await Promise.race([cachePromise, new Promise(r => setTimeout(r, 120000))]);
+  await Promise.race([buildPromises[provider.slug], new Promise(r => setTimeout(r, 120000))]);
 }
 
 app.get('/manifest.json', (req, res) => res.json(MANIFEST));
 
-// Stremio/Nuvio volá: /catalog/movie/netflix-cz-movies/skip=40.json
-// alebo:             /catalog/movie/netflix-cz-movies.json?skip=40
 app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
-    await ensureCache();
     const { type, id, extra } = req.params;
 
-    // Parsuj skip z extra path parametra (skip=40) alebo query stringu (?skip=40)
+    // Zisti providera zo slug v id (napr. "netflix-cz-movies" → "netflix")
+    const provider = PROVIDERS.find(p => id.startsWith(p.slug));
+    if (!provider) return res.json({ metas: [] });
+
+    await ensureProviderCache(provider);
+
     let skip = 0;
-    if (extra) {
-      const m = extra.match(/skip=(\d+)/);
-      if (m) skip = parseInt(m[1]);
-    }
+    if (extra) { const m = extra.match(/skip=(\d+)/); if (m) skip = parseInt(m[1]); }
     if (req.query.skip) skip = parseInt(req.query.skip);
 
     const PAGE_SIZE = 20;
+    const c = cache[provider.slug];
     let items = [];
 
-    if (id === 'netflix-cz-movies' && type === 'movie') {
-      items = cache.movies.map(m => toStremioItem(m, 'movie'));
-    } else if (id === 'netflix-cz-series' && type === 'series') {
-      items = cache.tv.map(m => toStremioItem(m, 'tv'));
+    if (id === `${provider.slug}-cz-movies` && type === 'movie') {
+      items = c.movies.map(m => toStremioItem(m, 'movie'));
+    } else if (id === `${provider.slug}-cz-series` && type === 'series') {
+      items = c.tv.map(m => toStremioItem(m, 'tv'));
     }
 
-    const page = items.slice(skip, skip + PAGE_SIZE);
-    console.log(`[catalog] ${id} skip=${skip} → ${page.length} z ${items.length}`);
-    res.json({ metas: page });
-  } catch (e) {
+    console.log(`[catalog] ${id} skip=${skip} → ${Math.min(PAGE_SIZE, items.length-skip)} z ${items.length}`);
+    res.json({ metas: items.slice(skip, skip + PAGE_SIZE) });
+  } catch(e) {
     console.error(e);
     res.status(500).json({ metas: [] });
   }
 });
 
 app.get('/', (req, res) => {
-  const age = cache.lastFetch
-    ? Math.round((Date.now() - cache.lastFetch) / 60000) + ' min'
-    : 'ešte nenahrané';
-  res.send(
-    `<pre>Netflix CZ Addon v2.1\n` +
-    `Filmy:    ${cache.movies.length}\n` +
-    `Seriály:  ${cache.tv.length}\n` +
-    `Cache:    ${age} stará\n` +
-    `Building: ${cache.building}\n\n` +
-    `<a href="/manifest.json">/manifest.json</a>\n` +
-    `<a href="/catalog/movie/netflix-cz-movies.json">/catalog/movie/netflix-cz-movies.json</a>\n` +
-    `<a href="/catalog/movie/netflix-cz-movies.json?skip=20">/catalog/movie/netflix-cz-movies.json?skip=20</a>\n` +
-    `<a href="/catalog/movie/netflix-cz-movies/skip=20.json">/catalog/movie/netflix-cz-movies/skip=20.json</a></pre>`
-  );
+  const rows = PROVIDERS.map(p => {
+    const c = cache[p.slug];
+    const age = c.lastFetch ? Math.round((Date.now() - c.lastFetch) / 60000) + ' min' : 'nenahrané';
+    return `${p.name.padEnd(14)} Filmy: ${String(c.movies.length).padStart(4)}  Seriály: ${String(c.tv.length).padStart(4)}  Cache: ${age}`;
+  }).join('\n');
+  res.send(`<pre>CZ Streaming Katalógy v3.0\n\n${rows}\n\n<a href="/manifest.json">/manifest.json</a></pre>`);
 });
 
 app.listen(PORT, () => {
   console.log(`Server štartuje na porte ${PORT}`);
-  buildCache();
+  // Buduj cache pre všetkých providerov postupne (nie naraz — rate limit)
+  (async () => {
+    for (const p of PROVIDERS) {
+      await buildProviderCache(p);
+    }
+  })();
 });

@@ -4,6 +4,7 @@ const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const CACHE_TTL = 6 * 60 * 60 * 1000;
 
+// ── STREAMING PROVIDERI ──────────────────────────────────────────────────────
 const PROVIDERS = [
   { id: 8,    name: 'Netflix',     slug: 'netflix' },
   { id: 337,  name: 'Disney+',     slug: 'disney'  },
@@ -11,16 +12,51 @@ const PROVIDERS = [
   { id: 1899, name: 'HBO Max',     slug: 'hbo'     },
 ];
 
-const MOVIE_GENRE_IDS = [28,12,16,35,80,99,18,10751,14,27,9648,10749,878,53,10752,37];
-const TV_GENRE_IDS    = [10759,16,35,80,99,18,10751,9648,878,10765,53];
+// ── ŽÁNRE ────────────────────────────────────────────────────────────────────
+const MOVIE_GENRES = [
+  { id: 28,    name: 'Akcia'         },
+  { id: 12,    name: 'Dobrodružstvo' },
+  { id: 16,    name: 'Animácia'      },
+  { id: 35,    name: 'Komédia'       },
+  { id: 80,    name: 'Krimi'         },
+  { id: 99,    name: 'Dokumentárny'  },
+  { id: 18,    name: 'Dráma'         },
+  { id: 10751, name: 'Rodinný'       },
+  { id: 14,    name: 'Fantasy'       },
+  { id: 27,    name: 'Horor'         },
+  { id: 9648,  name: 'Mysteriózny'   },
+  { id: 10749, name: 'Romantický'    },
+  { id: 878,   name: 'Sci-Fi'        },
+  { id: 53,    name: 'Thriller'      },
+  { id: 10752, name: 'Vojnový'       },
+  { id: 37,    name: 'Western'       },
+];
 
-let cache = {};
+const TV_GENRES = [
+  { id: 10759, name: 'Akcia'          },
+  { id: 16,    name: 'Animácia'       },
+  { id: 35,    name: 'Komédia'        },
+  { id: 80,    name: 'Krimi'          },
+  { id: 99,    name: 'Dokumentárny'   },
+  { id: 18,    name: 'Dráma'          },
+  { id: 10751, name: 'Rodinný'        },
+  { id: 9648,  name: 'Mysteriózny'    },
+  { id: 878,   name: 'Sci-Fi'         },
+  { id: 10765, name: 'Sci-Fi/Fantasy' },
+  { id: 53,    name: 'Thriller'       },
+];
+
+const MOVIE_GENRE_IDS = MOVIE_GENRES.map(function(g) { return g.id; });
+const TV_GENRE_IDS    = TV_GENRES.map(function(g) { return g.id; });
+
+// ── CACHE ────────────────────────────────────────────────────────────────────
+let providerCache = {};
 PROVIDERS.forEach(function(p) {
-  cache[p.slug] = { movies: [], tv: [], lastFetch: 0, building: false };
+  providerCache[p.slug] = { movies: [], tv: [], lastFetch: 0, building: false };
 });
 
-// Jednoduchý manifest BEZ options — len skip
-const MANIFEST = {
+// ── MANIFEST 1: Streaming katalógy ──────────────────────────────────────────
+const STREAMING_MANIFEST = {
   id: 'community.cz-streaming-catalogs',
   version: '5.1.0',
   name: 'CZ Streaming Katalogy',
@@ -37,6 +73,35 @@ const MANIFEST = {
   idPrefixes: ['tmdb:'],
 };
 
+// ── MANIFEST 2: Žánrový katalóg ──────────────────────────────────────────────
+const GENRE_MANIFEST = {
+  id: 'community.cz-genre-catalog',
+  version: '1.0.0',
+  name: 'CZ Katalóg podľa žánru',
+  description: 'Všetky filmy a seriály zo všetkých streamovacích služieb podľa žánru',
+  logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Netflix_2015_logo.svg/200px-Netflix_2015_logo.svg.png',
+  resources: ['catalog'],
+  types: ['movie', 'series'],
+  catalogs: [].concat(
+    MOVIE_GENRES.map(function(g) {
+      return { type: 'movie', id: 'genre-movie-' + g.id, name: '🎬 ' + g.name, extra: [{ name: 'skip', isRequired: false }] };
+    }),
+    TV_GENRES.map(function(g) {
+      return { type: 'series', id: 'genre-tv-' + g.id, name: '📺 ' + g.name, extra: [{ name: 'skip', isRequired: false }] };
+    }),
+    [
+      { type: 'movie',  id: 'genre-movie-top',  name: '⭐ Filmy - Top hodnotenie',   extra: [{ name: 'skip', isRequired: false }] },
+      { type: 'series', id: 'genre-tv-top',     name: '⭐ Serialy - Top hodnotenie', extra: [{ name: 'skip', isRequired: false }] },
+      { type: 'movie',  id: 'genre-movie-new',  name: '🆕 Filmy - Najnovšie',        extra: [{ name: 'skip', isRequired: false }] },
+      { type: 'series', id: 'genre-tv-new',     name: '🆕 Serialy - Najnovšie',      extra: [{ name: 'skip', isRequired: false }] },
+      { type: 'movie',  id: 'genre-movie-pop',  name: '🔥 Filmy - Najpopulárnejšie', extra: [{ name: 'skip', isRequired: false }] },
+      { type: 'series', id: 'genre-tv-pop',     name: '🔥 Serialy - Najpopulárnejšie', extra: [{ name: 'skip', isRequired: false }] },
+    ]
+  ),
+  idPrefixes: ['tmdb:'],
+};
+
+// ── EXPRESS ───────────────────────────────────────────────────────────────────
 app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   next();
@@ -61,6 +126,17 @@ function toItem(item, type) {
   };
 }
 
+function parseSkip(extraStr, query) {
+  var skip = 0;
+  if (extraStr) {
+    var m = extraStr.match(/skip=(\d+)/);
+    if (m) skip = parseInt(m[1]);
+  }
+  if (query.skip) skip = parseInt(query.skip);
+  return skip;
+}
+
+// ── STREAMING CACHE ───────────────────────────────────────────────────────────
 async function fetchGenreForCache(mediaType, providerId, genreId, maxPages) {
   maxPages = maxPages || 5;
   var base = 'https://api.themoviedb.org/3/discover/' + mediaType
@@ -93,7 +169,7 @@ function dedup(arr) {
 var buildPromises = {};
 
 async function buildProviderCache(provider) {
-  var c = cache[provider.slug];
+  var c = providerCache[provider.slug];
   if (c.building) return;
   if (Date.now() - c.lastFetch < CACHE_TTL) return;
   c.building = true;
@@ -110,7 +186,7 @@ async function buildProviderCache(provider) {
     var tv = dedup(results[1].reduce(function(a, b) { return a.concat(b); }, []));
     movies.sort(function(a, b) { return (b.popularity || 0) - (a.popularity || 0); });
     tv.sort(function(a, b) { return (b.popularity || 0) - (a.popularity || 0); });
-    cache[provider.slug] = { movies: movies, tv: tv, lastFetch: Date.now(), building: false };
+    providerCache[provider.slug] = { movies: movies, tv: tv, lastFetch: Date.now(), building: false };
     console.log('[' + provider.name + '] ' + movies.length + ' filmov, ' + tv.length + ' serialov');
   } catch(e) {
     c.building = false;
@@ -119,7 +195,7 @@ async function buildProviderCache(provider) {
 }
 
 async function ensureProviderCache(provider) {
-  var c = cache[provider.slug];
+  var c = providerCache[provider.slug];
   if (c.movies.length > 0 && Date.now() - c.lastFetch < CACHE_TTL) return;
   if (!buildPromises[provider.slug]) {
     buildPromises[provider.slug] = buildProviderCache(provider).finally(function() {
@@ -129,60 +205,37 @@ async function ensureProviderCache(provider) {
   await Promise.race([buildPromises[provider.slug], new Promise(function(r) { setTimeout(r, 120000); })]);
 }
 
-function parseExtra(extraStr, query) {
-  var params = { skip: 0, genre: null, year: null, sort: null };
-  if (extraStr) {
-    extraStr.split('&').forEach(function(part) {
-      var kv = part.split('=');
-      if (kv.length === 2) params[kv[0]] = decodeURIComponent(kv[1]);
-    });
-  }
-  if (query.skip)  params.skip  = parseInt(query.skip);
-  if (query.genre) params.genre = query.genre;
-  if (query.year)  params.year  = query.year;
-  if (query.sort)  params.sort  = query.sort;
-  if (params.skip) params.skip  = parseInt(params.skip);
-  return params;
-}
-
-async function fetchFiltered(mediaType, providerId, filters) {
-  var skip = filters.skip || 0;
+// ── ŽÁNROVÝ FETCH (priamo z TMDB, bez filtra providera) ───────────────────────
+async function fetchGenreCatalog(mediaType, params, skip) {
   var page = Math.floor(skip / 20) + 1;
-  var sort = filters.sort || 'popularity.desc';
-  if (mediaType === 'tv' && sort === 'primary_release_date.desc') sort = 'first_air_date.desc';
-
+  // Všetky 4 CZ provideri spojené pipe-om
+  var allProviders = PROVIDERS.map(function(p) { return p.id; }).join('|');
   var url = 'https://api.themoviedb.org/3/discover/' + mediaType
     + '?api_key=' + TMDB_KEY
-    + '&with_watch_providers=' + providerId
-    + '&watch_region=CZ&language=cs-CZ&include_adult=false'
-    + '&sort_by=' + sort
+    + '&with_watch_providers=' + allProviders
+    + '&watch_region=CZ'
+    + '&language=cs-CZ'
+    + '&include_adult=false'
+    + '&' + params
     + '&page=' + page;
-
-  if (filters.genre) url += '&with_genres=' + filters.genre;
-
-  if (filters.year) {
-    var dateField = mediaType === 'movie' ? 'primary_release_date' : 'first_air_date';
-    var yearVal = filters.year;
-    if (yearVal.includes('-')) {
-      var parts = yearVal.split('-');
-      url += '&' + dateField + '.gte=' + parts[0] + '-01-01&' + dateField + '.lte=' + parts[1] + '-12-31';
-    } else {
-      url += '&' + dateField + '.gte=' + yearVal + '-01-01&' + dateField + '.lte=' + yearVal + '-12-31';
-    }
-  }
-
   var d = await tmdbFetch(url);
-  return d.results || [];
+  return (d.results || []).map(function(x) { return toItem(x, mediaType); });
 }
 
-app.get('/manifest.json', function(req, res) { res.json(MANIFEST); });
+// ── ROUTES ────────────────────────────────────────────────────────────────────
 
+// Streaming manifest
+app.get('/manifest.json', function(req, res) { res.json(STREAMING_MANIFEST); });
+
+// Žánrový manifest — samostatná URL
+app.get('/genre/manifest.json', function(req, res) { res.json(GENRE_MANIFEST); });
+
+// Streaming katalógy
 app.get('/catalog/:type/:id/:extra?.json', async function(req, res) {
   try {
     var type = req.params.type;
     var id = req.params.id;
-    var extraStr = req.params.extra || '';
-    var filters = parseExtra(extraStr, req.query);
+    var skip = parseSkip(req.params.extra, req.query);
 
     var provider = null;
     for (var i = 0; i < PROVIDERS.length; i++) {
@@ -190,18 +243,10 @@ app.get('/catalog/:type/:id/:extra?.json', async function(req, res) {
     }
     if (!provider) return res.json({ metas: [] });
 
-    var mediaType = type === 'movie' ? 'movie' : 'tv';
-    var hasFilters = filters.genre || filters.year || filters.sort;
-
-    if (hasFilters) {
-      var raw = await fetchFiltered(mediaType, provider.id, filters);
-      return res.json({ metas: raw.map(function(x) { return toItem(x, mediaType); }) });
-    }
-
     await ensureProviderCache(provider);
-    var c = cache[provider.slug];
+    var c = providerCache[provider.slug];
     var all = type === 'movie' ? c.movies : c.tv;
-    var skip = filters.skip || 0;
+    var mediaType = type === 'movie' ? 'movie' : 'tv';
     var items = all.map(function(x) { return toItem(x, mediaType); }).slice(skip, skip + 20);
     res.json({ metas: items });
   } catch(e) {
@@ -210,13 +255,52 @@ app.get('/catalog/:type/:id/:extra?.json', async function(req, res) {
   }
 });
 
+// Žánrový katalóg
+app.get('/genre/catalog/:type/:id/:extra?.json', async function(req, res) {
+  try {
+    var type = req.params.type;
+    var id = req.params.id;
+    var skip = parseSkip(req.params.extra, req.query);
+    var mediaType = type === 'movie' ? 'movie' : 'tv';
+    var params = '';
+
+    if (id.startsWith('genre-movie-') || id.startsWith('genre-tv-')) {
+      var genreId = id.replace('genre-movie-', '').replace('genre-tv-', '');
+      if (genreId !== 'top' && genreId !== 'new' && genreId !== 'pop') {
+        params = 'with_genres=' + genreId + '&sort_by=popularity.desc&vote_count.gte=20';
+      }
+    }
+
+    if (id === 'genre-movie-top' || id === 'genre-tv-top') {
+      params = 'sort_by=vote_average.desc&vote_count.gte=300';
+    } else if (id === 'genre-movie-new' || id === 'genre-tv-new') {
+      var df = mediaType === 'movie' ? 'primary_release_date' : 'first_air_date';
+      params = 'sort_by=' + df + '.desc&vote_count.gte=10';
+    } else if (id === 'genre-movie-pop' || id === 'genre-tv-pop') {
+      params = 'sort_by=popularity.desc';
+    }
+
+    if (!params) return res.json({ metas: [] });
+
+    var metas = await fetchGenreCatalog(mediaType, params, skip);
+    console.log('[genre] ' + id + ' skip=' + skip + ' -> ' + metas.length);
+    res.json({ metas: metas });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ metas: [] });
+  }
+});
+
 app.get('/', function(req, res) {
   var rows = PROVIDERS.map(function(p) {
-    var c = cache[p.slug];
+    var c = providerCache[p.slug];
     var age = c.lastFetch ? Math.round((Date.now() - c.lastFetch) / 60000) + ' min' : 'nahrava sa';
-    return p.name + ' Filmy: ' + c.movies.length + ' Serialy: ' + c.tv.length + ' Cache: ' + age;
+    return p.name + ': Filmy ' + c.movies.length + ', Serialy ' + c.tv.length + ' (' + age + ')';
   }).join('\n');
-  res.send('<pre>CZ Streaming Katalogy v5.1\n\n' + rows + '\n\n<a href="/manifest.json">/manifest.json</a></pre>');
+  res.send('<pre>CZ Streaming Katalogy v5.1 + Žánrový katalóg v1.0\n\n'
+    + rows
+    + '\n\nStreaming: <a href="/manifest.json">/manifest.json</a>'
+    + '\nŽánrový:  <a href="/genre/manifest.json">/genre/manifest.json</a></pre>');
 });
 
 app.listen(PORT, function() {

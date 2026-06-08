@@ -10,7 +10,6 @@ const PROVIDERS = [
   { id: 119,  name: 'Prime Video', slug: 'prime'   },
   { id: 1899, name: 'HBO Max',     slug: 'hbo'     },
   { id: 350,  name: 'Apple TV+',   slug: 'apple'   },
-  { id: 76,   name: 'Oneplay',     slug: 'oneplay' }, // Oneplay (Voyo CZ)
 ];
 
 const MOVIE_GENRE_IDS = [28,12,16,35,80,99,18,10751,14,27,9648,10749,878,53,10752,37];
@@ -69,7 +68,7 @@ const STREAMING_MANIFEST = {
   id: 'community.cz-streaming-catalogs',
   version: '7.0.0',
   name: 'CZ+SK Streaming Katalogy',
-  description: 'Netflix, Disney+, Prime Video, HBO Max, Apple TV+, Oneplay pre CZ a SK',
+  description: 'Netflix, Disney+, Prime Video, HBO Max, Apple TV+ pre CZ a SK',
   logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/08/Netflix_2015_logo.svg/200px-Netflix_2015_logo.svg.png',
   resources: ['catalog'],
   types: ['movie', 'series'],

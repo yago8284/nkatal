@@ -3,6 +3,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const CACHE_TTL = 6 * 60 * 60 * 1000;
+app.use(express.static('public'));
 
 const PROVIDERS = [
   { id: 8,    name: 'Netflix',     slug: 'netflix' },
